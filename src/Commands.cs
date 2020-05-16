@@ -82,6 +82,23 @@ namespace PSP4
 		public string Description { get; set; }
 	}
 
+	public class PSP4FileLogItem
+	{
+		public int Revision { get; set; }
+
+		public int ChangeList { get; set; }
+
+		public string Action { get; set; }
+	
+		public DateTime DateTime { get; set; }
+
+		public string UserName { get; set; }
+
+		public string ClientName { get; set; }
+
+		public string Description { get; set; }
+	}
+
 	public class PSP4OpenedFile
 	{
 		public string FilePath { get; set; }
@@ -107,6 +124,11 @@ namespace PSP4
 		public SessionState SessionState { get; set; }
 
 		public PSP4FileSyntax FileSyntax { get; set; } = PSP4FileSyntax.LocalRelative;
+
+		public override string ToString()
+		{
+			return $"Command: {Command}, Arguments: {string.Join(" ", CommandArguments)}";
+		}
 	}
 
 	public class PSP4ExecutionResult
@@ -247,7 +269,8 @@ namespace PSP4
 			{ 
 				{ "info" , Info },
 				{ "changes" , Changes },
-				{ "opened" , Opened }
+				{ "opened" , Opened },
+				{ "filelog" , FileLog }
 			};
 		}
 
@@ -418,6 +441,44 @@ namespace PSP4
 			return changes;
 		}
 
+		private static object FileLog(PSP4ExecutionResult executionResult)
+		{
+			var arguments = executionResult.Arguments;
+
+			if (arguments.CommandArguments.Any(arg => arg.ToLower() == "-l" || arg.ToLower() == "-L"))
+			{
+				return executionResult.Output;
+			}
+			else
+			{
+				var filelog = executionResult.Output
+					.Select(line => Regex.Matches(line, @".*#(\d+)\schange\s(\d+)\s(\w+)\son\s(\d+\/\d+\/\d+)\sby\s([0-9a-zA-Z-\._]+)@([0-9a-zA-Z-\._]+)\s\((\w+)\)\s(.*)", RegexOptions.IgnoreCase))
+					.Where(matches => matches.Count > 0)
+					.Select(matches => matches[0])
+					.Select(match =>
+					{
+						var logItem = new PSP4FileLogItem();
+
+						logItem.Revision = int.Parse(match.Groups[1].Captures[0].Value);
+						logItem .ChangeList = int.Parse(match.Groups[2].Captures[0].Value);
+						logItem .Action = match.Groups[3].Captures[0].Value;
+
+						DateTime dateTime;
+						if (DateTime.TryParse(match.Groups[4].Captures[0].Value, out dateTime))
+							logItem .DateTime = dateTime;
+
+						logItem.UserName = match.Groups[5].Captures[0].Value;
+						logItem.ClientName = match.Groups[6].Captures[0].Value;
+						logItem.Description = match.Groups[8].Captures[0].Value;
+
+						return logItem;
+					})
+					.ToList();
+
+				return filelog;
+			}
+		}
+
 		public static object Parse(PSP4ExecutionResult executionResult)
 		{
 			Func<PSP4ExecutionResult, object> handler;
@@ -438,14 +499,8 @@ namespace PSP4
         [Parameter(Position = 0, Mandatory = true, ValueFromPipelineByPropertyName = true)]
         public string Command { get; set; } = "info";
 
-        [Parameter(Position = 1, Mandatory = false, ValueFromRemainingArguments = true)]
+        [Parameter(Position = 1, Mandatory = false, ValueFromPipelineByPropertyName = true, ValueFromRemainingArguments = true)]
         public string[] Arguments { get; set; }
-
-        [Parameter(ValueFromPipelineByPropertyName = true)]
-		public SwitchParameter LocalSyntax { get; set; }
-
-        [Parameter(ValueFromPipelineByPropertyName = true)]
-		public SwitchParameter DepotSyntax { get; set; }
 
         protected override void ProcessRecord()
 		{
@@ -458,16 +513,23 @@ namespace PSP4
 			}
 			else
 			{
+				var arguments = (Arguments ?? new string[] {}).ToList();
+
+				//TODO: Find a way to use switch parameters. Currently
+				// they interfer with regular p4 flags, i.e -l will interfer
+				// with a switch parameter -LocalSyntax
+				var fileSyntax = PSP4FileSyntax.LocalRelative;
+				if (arguments.Remove("-localsyntax"))
+					fileSyntax = PSP4FileSyntax.Local;
+				if (arguments.Remove("-depotsyntax"))
+					fileSyntax = PSP4FileSyntax.Depot;
+
 				var result = PSP4Command.Execute(new PSP4CommandArguments
 				{
 					Command = Command,
-					CommandArguments = (Arguments ?? new string[] {}).ToList(),
+					CommandArguments = arguments,
 					SessionState = SessionState,
-					FileSyntax = LocalSyntax.IsPresent
-						? PSP4FileSyntax.Local
-						: DepotSyntax.IsPresent
-							? PSP4FileSyntax.Depot
-							: PSP4FileSyntax.LocalRelative
+					FileSyntax = fileSyntax
 				});
 
 				var structuredOutput = StructuredOutput.Parse(result);
