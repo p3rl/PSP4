@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.IO;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Text;
@@ -39,6 +40,14 @@ namespace PSP4
 				return result;
 			}
 		}
+	}
+
+	public enum PSP4FileSyntax
+	{
+		Local,
+		LocalRelative,
+		Client,
+		Depot
 	}
 
 	public class PSP4ClientInfo
@@ -96,6 +105,8 @@ namespace PSP4
 		public List<string> CommandArguments { get; set; } = new List<string>();
 
 		public SessionState SessionState { get; set; }
+
+		public PSP4FileSyntax FileSyntax { get; set; } = PSP4FileSyntax.LocalRelative;
 	}
 
 	public class PSP4ExecutionResult
@@ -160,6 +171,32 @@ namespace PSP4
 				arguments.CommandArguments);
 
 			return result;
+		}
+	}
+
+	internal static class FileSyntaxHelper
+	{
+		public static string FromDepotSyntaxTo(PSP4FileSyntax syntax, string fileName, PSP4ClientInfo clientInfo)
+		{
+			switch (syntax)
+			{
+				case PSP4FileSyntax.LocalRelative:
+				{
+					return fileName.Remove(0, clientInfo.ClientStream.Length + 1).Replace("/", @"\");
+				}
+				case PSP4FileSyntax.Depot:
+				{
+					return fileName;
+				}
+				case PSP4FileSyntax.Local:
+				{
+					return Path.GetFullPath($"{clientInfo.ClientRoot}\\{fileName.Remove(0, clientInfo.ClientStream.Length + 1)}");
+				}
+				default:
+				{
+					return fileName;
+				}
+			}
 		}
 	}
 
@@ -276,7 +313,7 @@ namespace PSP4
 
 			return clientInfo;
 		}
-		//^\/\/[0-9a-zA-Z\/\-_\.]*)#(\d+)\s-\s(edit|add)\s*(default)?\schange\s(\d+)?
+
 		private static object Opened(PSP4ExecutionResult executionResult)
 		{
 			var clientInfo = executionResult.ClientInfo;
@@ -289,7 +326,7 @@ namespace PSP4
 					var openedFile = new PSP4OpenedFile();
 
 					var depotFilePath = matches[0].Groups[1].Captures[0].Value;
-					openedFile.FilePath = depotFilePath.Remove(0, clientInfo.ClientStream.Length + 1);
+					openedFile.FilePath = FileSyntaxHelper.FromDepotSyntaxTo(executionResult.Arguments.FileSyntax, depotFilePath, clientInfo); 
 					openedFile.Revision = int.Parse(matches[0].Groups[2].Captures[0].Value);
 					openedFile.Action = matches[0].Groups[3].Captures[0].Value;
 					if (matches[0].Groups[4].Captures.Count > 0)
@@ -404,6 +441,12 @@ namespace PSP4
         [Parameter(Position = 1, Mandatory = false, ValueFromRemainingArguments = true)]
         public string[] Arguments { get; set; }
 
+        [Parameter(ValueFromPipelineByPropertyName = true)]
+		public SwitchParameter LocalSyntax { get; set; }
+
+        [Parameter(ValueFromPipelineByPropertyName = true)]
+		public SwitchParameter DepotSyntax { get; set; }
+
         protected override void ProcessRecord()
 		{
 			bool resetWorkspace = Command.ToLower() == "reset";
@@ -419,11 +462,15 @@ namespace PSP4
 				{
 					Command = Command,
 					CommandArguments = (Arguments ?? new string[] {}).ToList(),
-					SessionState = SessionState
+					SessionState = SessionState,
+					FileSyntax = LocalSyntax.IsPresent
+						? PSP4FileSyntax.Local
+						: DepotSyntax.IsPresent
+							? PSP4FileSyntax.Depot
+							: PSP4FileSyntax.LocalRelative
 				});
 
 				var structuredOutput = StructuredOutput.Parse(result);
-
 				WriteObject(structuredOutput, true);
 			}
 		}
